@@ -26,4 +26,6 @@ jobs:
           NS_COOKIES: ${{ secrets.NS_COOKIES }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          # 签到模式：true = 试试手气，false = 固定鸡腿（默认 false）
+          NS_RANDOM: false
         run: python checkin.py
