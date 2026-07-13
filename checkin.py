@@ -10,12 +10,10 @@ from datetime import datetime
 def decode_jwt_payload(jwt_token):
     """解码 JWT 的 payload 部分，返回 dict"""
     try:
-        # JWT 由三部分组成，取第二部分（payload）
         parts = jwt_token.split('.')
         if len(parts) < 2:
             return None
         payload_b64 = parts[1]
-        # 补齐 base64 填充
         payload_b64 += '=' * (4 - len(payload_b64) % 4)
         payload_json = base64.urlsafe_b64decode(payload_b64).decode('utf-8')
         return json.loads(payload_json)
@@ -23,11 +21,7 @@ def decode_jwt_payload(jwt_token):
         return None
 
 def get_expiry_from_cookie(cookie_str):
-    """
-    从 Cookie 字符串中提取 pjwt，解码获取 exp 时间戳，返回剩余天数（整数）
-    若无法提取则返回 None
-    """
-    # 提取 pjwt 值
+    """从 Cookie 中提取 pjwt，解码获取 exp，返回剩余天数"""
     match = re.search(r'pjwt=([^;]+)', cookie_str)
     if not match:
         return None
@@ -65,20 +59,28 @@ def send_telegram_message(text):
     except Exception as e:
         print(f"发送 Telegram 异常: {e}")
 
-def checkin(cookie):
-    """执行签到并返回 (是否成功, 消息, 获得鸡腿数)"""
+def checkin(cookie, random_mode=False):
+    """
+    执行签到
+    - random_mode: True 表示“试试手气”，False 表示固定签到
+    """
     url = "https://www.nodeseek.com/api/attendance"
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Cookie': cookie
+        'Cookie': cookie,
+        'Content-Type': 'application/json'
     }
+    data = None
+    if random_mode:
+        # 根据 NodeSeek API，试试手气需传递 random=true 参数
+        data = {'random': True}
     try:
-        resp = requests.post(url, headers=headers, timeout=15)
+        resp = requests.post(url, headers=headers, json=data, timeout=15)
         if resp.status_code != 200:
             return False, f"HTTP {resp.status_code}", 0
-        data = resp.json()
-        success = data.get('success', False)
-        msg = data.get('message', '')
+        result = resp.json()
+        success = result.get('success', False)
+        msg = result.get('message', '')
         chicken = 0
         if success:
             m = re.search(r'获得(\d+)鸡腿', msg)
@@ -94,15 +96,18 @@ def main():
         print("错误: 未设置 NS_COOKIES")
         sys.exit(1)
 
+    # 读取签到模式（环境变量 NS_RANDOM，true 表示试试手气）
+    random_mode = os.getenv('NS_RANDOM', 'false').strip().lower() == 'true'
+
     lines = [line.strip() for line in cookies_raw.split('\n') if line.strip()]
     if not lines:
         print("错误: NS_COOKIES 为空")
         sys.exit(1)
 
+    print(f"签到模式: {'试试手气' if random_mode else '固定鸡腿'}")
     print(f"检测到 {len(lines)} 个账号，开始签到...")
     results = []
 
-    # 解析每一行，支持 "用户名|Cookie" 或 纯Cookie
     accounts = []
     for line in lines:
         if '|' in line:
@@ -115,11 +120,10 @@ def main():
     for idx, (username, cookie) in enumerate(accounts, 1):
         display_name = username if username else f"账号 {idx}"
 
-        # 自动从 Cookie 中提取过期剩余天数
         days_left = get_expiry_from_cookie(cookie)
         days_str = f"{days_left} 天" if days_left is not None else "未知"
 
-        success, msg, chicken = checkin(cookie)
+        success, msg, chicken = checkin(cookie, random_mode)
         status_icon = "✅" if success else "❌"
         if success and chicken == 0:
             m = re.search(r'(\d+)', msg)
