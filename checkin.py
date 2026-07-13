@@ -67,15 +67,31 @@ def main():
         print("错误: 未设置 NS_COOKIES")
         sys.exit(1)
 
-    cookies = [c.strip() for c in cookies_raw.split('\n') if c.strip()]
-    if not cookies:
+    lines = [line.strip() for line in cookies_raw.split('\n') if line.strip()]
+    if not lines:
         print("错误: NS_COOKIES 为空")
         sys.exit(1)
 
-    print(f"检测到 {len(cookies)} 个账号，开始签到...")
+    print(f"检测到 {len(lines)} 个账号，开始签到...")
     results = []
 
-    for idx, cookie in enumerate(cookies, 1):
+    # 解析每一行，支持 "用户名|Cookie" 或 "用户名:Cookie" 格式
+    accounts = []
+    for line in lines:
+        if '|' in line:
+            username, cookie = line.split('|', 1)
+        elif ':' in line:
+            username, cookie = line.split(':', 1)
+        else:
+            # 没有分隔符，整行视为 Cookie，用户名留空
+            username = None
+            cookie = line
+        accounts.append((username, cookie.strip()))
+
+    for idx, (username, cookie) in enumerate(accounts, 1):
+        # 若未指定用户名，则使用默认 "账号 N"
+        display_name = username if username else f"账号 {idx}"
+
         days_left = parse_cookie_expiry(cookie)
         days_str = f"{days_left} 天" if days_left is not None else "未知"
 
@@ -87,7 +103,7 @@ def main():
             if m:
                 chicken = int(m.group(1))
 
-        result_line = f"账号 {idx}: {status_icon} {msg} | 获得 {chicken} 鸡腿 | 剩余 {days_str}"
+        result_line = f"{display_name}: {status_icon} {msg} | 获得 {chicken} 鸡腿 | 剩余 {days_str}"
         results.append(result_line)
         print(result_line)
 
