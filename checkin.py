@@ -7,7 +7,7 @@ import json
 from datetime import datetime
 
 def parse_expiry_date(expiry_str):
-    """解析全局过期日期（格式：YYYY-MM-DD），返回剩余天数"""
+    """解析过期日期（格式：YYYY-MM-DD），返回剩余天数"""
     if not expiry_str:
         return None
     try:
@@ -38,9 +38,7 @@ def send_telegram_message(text):
         print(f"发送 Telegram 异常: {e}")
 
 def checkin(cookie, random_mode=False):
-    """
-    签到函数，使用正确的 API 方式：POST /api/attendance?random=true/false，body为空
-    """
+    """签到函数，使用正确的 API 方式：POST /api/attendance?random=true/false，body为空"""
     random_param = 'true' if random_mode else 'false'
     url = f"https://www.nodeseek.com/api/attendance?random={random_param}"
     
@@ -96,7 +94,6 @@ def main():
         sys.exit(1)
 
     random_mode = os.getenv('NS_RANDOM', 'false').strip().lower() == 'true'
-    expiry_date_str = os.getenv('NS_EXPIRY_DATE', '').strip()
 
     lines = [line.strip() for line in cookies_raw.split('\n') if line.strip()]
     if not lines:
@@ -107,22 +104,30 @@ def main():
     print(f"检测到 {len(lines)} 个账号，开始签到...")
     results = []
 
-    # 解析每行，支持格式：用户名|Cookie  或 纯Cookie
+    # 解析每行，支持格式：用户名|Cookie|到期日期（可选）
     accounts = []
     for line in lines:
-        if '|' in line:
-            username, cookie = line.split('|', 1)
+        parts = line.split('|')
+        if len(parts) >= 3:
+            username = parts[0].strip()
+            cookie = parts[1].strip()
+            expiry_date = parts[2].strip()
+        elif len(parts) == 2:
+            username = parts[0].strip()
+            cookie = parts[1].strip()
+            expiry_date = None
         else:
             username = None
             cookie = line
-        accounts.append((username, cookie.strip()))
+            expiry_date = None
+        accounts.append((username, cookie, expiry_date))
 
-    # 计算全局剩余天数
-    days_left = parse_expiry_date(expiry_date_str)
-    days_str = f"{days_left} 天" if days_left is not None else "未知"
-
-    for idx, (username, cookie) in enumerate(accounts, 1):
+    for idx, (username, cookie, expiry_date) in enumerate(accounts, 1):
         display_name = username if username else f"账号 {idx}"
+
+        # 计算该账号的剩余天数
+        days_left = parse_expiry_date(expiry_date)
+        days_str = f"{days_left} 天" if days_left is not None else "未知"
 
         success, msg, chicken = checkin(cookie, random_mode)
         status_icon = "✅" if success else "❌"
@@ -131,7 +136,6 @@ def main():
             if numbers:
                 chicken = int(numbers[0])
 
-        # 通知中显示 "cookie到期剩余"
         result_line = f"{display_name}: {status_icon} {msg} | 获得 {chicken} 鸡腿 | cookie到期剩余 {days_str}"
         results.append(result_line)
         print(result_line)
