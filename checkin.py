@@ -8,7 +8,6 @@ import base64
 from datetime import datetime
 
 def decode_jwt_payload(jwt_token):
-    """解码 JWT payload"""
     try:
         parts = jwt_token.split('.')
         if len(parts) < 2:
@@ -21,7 +20,6 @@ def decode_jwt_payload(jwt_token):
         return None
 
 def get_expiry_from_cookie(cookie_str):
-    """从 pjwt 提取过期剩余天数"""
     match = re.search(r'pjwt=([^;]+)', cookie_str)
     if not match:
         return None
@@ -60,7 +58,6 @@ def send_telegram_message(text):
         print(f"发送 Telegram 异常: {e}")
 
 def get_csrf_token(cookie):
-    """访问首页获取 XSRF-TOKEN（若不存在）"""
     try:
         url = "https://www.nodeseek.com/"
         headers = {
@@ -72,7 +69,6 @@ def get_csrf_token(cookie):
         }
         resp = requests.get(url, headers=headers, timeout=15)
         if resp.status_code == 200:
-            # 从返回的 cookies 中提取 XSRF-TOKEN
             for c in resp.cookies:
                 if c.name == 'XSRF-TOKEN':
                     return c.value
@@ -82,20 +78,16 @@ def get_csrf_token(cookie):
         return None
 
 def checkin(cookie, random_mode=False):
-    """执行签到，自动获取 CSRF Token 并尝试两种提交方式"""
-    # 1. 从现有 Cookie 提取 XSRF-TOKEN
+    # 获取 XSRF-TOKEN
     xsrf_token = None
     match = re.search(r'XSRF-TOKEN=([^;]+)', cookie)
     if match:
         xsrf_token = match.group(1)
     else:
-        # 如果没有，则访问首页获取
         xsrf_token = get_csrf_token(cookie)
         if xsrf_token:
-            # 将新 token 加入 cookie 字符串（便于后续重用）
             cookie = cookie + f"; XSRF-TOKEN={xsrf_token}"
 
-    # 2. 构建请求头
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'application/json, text/plain, */*',
@@ -111,31 +103,51 @@ def checkin(cookie, random_mode=False):
         headers['X-XSRF-TOKEN'] = xsrf_token
 
     url = "https://www.nodeseek.com/api/attendance"
-    data = None
-    if random_mode:
-        data = {'random': True}   # 试试手气
+    
+    # 尝试带参数的请求（JSON或Form）
+    def do_request(use_json=True, with_data=True):
+        data = None
+        if with_data and random_mode:
+            data = {'random': True}
+        try:
+            if use_json:
+                if data:
+                    return requests.post(url, headers=headers, json=data, timeout=15)
+                else:
+                    return requests.post(url, headers=headers, timeout=15)
+            else:
+                if data:
+                    form_data = {k: str(v).lower() if isinstance(v, bool) else v for k, v in data.items()}
+                    return requests.post(url, headers=headers, data=form_data, timeout=15)
+                else:
+                    return requests.post(url, headers=headers, timeout=15)
+        except Exception as e:
+            return None
 
-    # 3. 先尝试 JSON 方式
-    try:
-        if data:
-            resp = requests.post(url, headers=headers, json=data, timeout=15)
-        else:
-            resp = requests.post(url, headers=headers, timeout=15)
-    except Exception as e:
-        return False, f"请求异常(JSON): {e}", 0
+    # 第一次尝试：JSON + 数据
+    resp = do_request(use_json=True, with_data=True)
+    if resp is None:
+        return False, "请求异常", 0
 
-    # 4. 如果返回 419 或 403，尝试用 form-data 方式
+    # 如果返回 500，可能是因为已签到导致参数错误，尝试不带参数
+    if resp.status_code == 500:
+        print("收到 500，尝试不带参数重新请求...")
+        resp = do_request(use_json=True, with_data=False)
+        if resp is None:
+            return False, "请求异常（重试）", 0
+
+    # 如果返回 419 或 403，尝试表单提交
     if resp.status_code in (419, 403):
         print("收到 419/403，尝试使用表单提交...")
-        try:
-            if data:
-                # 将布尔值转为字符串
-                form_data = {k: str(v).lower() if isinstance(v, bool) else v for k, v in data.items()}
-                resp = requests.post(url, headers=headers, data=form_data, timeout=15)
-            else:
-                resp = requests.post(url, headers=headers, timeout=15)
-        except Exception as e:
-            return False, f"请求异常(Form): {e}", 0
+        resp = do_request(use_json=False, with_data=True)
+        if resp is None:
+            return False, "请求异常（表单）", 0
+        # 若表单提交也500，则再试一次不带参数
+        if resp.status_code == 500:
+            print("表单提交也返回 500，尝试不带参数...")
+            resp = do_request(use_json=False, with_data=False)
+            if resp is None:
+                return False, "请求异常（表单无参）", 0
 
     if resp.status_code != 200:
         return False, f"HTTP {resp.status_code}", 0
@@ -147,11 +159,27 @@ def checkin(cookie, random_mode=False):
 
     success = result.get('success', False)
     msg = result.get('message', '')
+
+    # 检查是否已签到
+    already_checked = False
+    if not success:
+        # 检查常见已签到提示
+        if re.search(r'(已签到|今日已签到|签到过了|重复签到|你已经签到)', msg):
+            already_checked = True
+            success = True  # 视为成功
+            msg = "已签到（今日已打卡）"
+
     chicken = 0
     if success:
+        # 尝试提取鸡腿数（可能为0）
         m = re.search(r'获得(\d+)鸡腿', msg)
         if m:
             chicken = int(m.group(1))
+        else:
+            # 如果消息中没有鸡腿数，但已签到，鸡腿为0
+            if already_checked:
+                chicken = 0
+
     return success, msg, chicken
 
 def main():
@@ -188,10 +216,11 @@ def main():
 
         success, msg, chicken = checkin(cookie, random_mode)
         status_icon = "✅" if success else "❌"
+        # 如果成功但鸡腿为0，尝试从消息中提取数字
         if success and chicken == 0:
-            m = re.search(r'(\d+)', msg)
-            if m:
-                chicken = int(m.group(1))
+            numbers = re.findall(r'\d+', msg)
+            if numbers:
+                chicken = int(numbers[0])
 
         result_line = f"{display_name}: {status_icon} {msg} | 获得 {chicken} 鸡腿 | 剩余 {days_str}"
         results.append(result_line)
