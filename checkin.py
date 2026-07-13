@@ -3,17 +3,44 @@ import os
 import requests
 import re
 import sys
+import json
+import base64
 from datetime import datetime
-from email.utils import parsedate_to_datetime
 
-def parse_cookie_expiry(cookie_str):
-    """从 Cookie 字符串中提取 expires 字段并计算剩余天数"""
-    match = re.search(r'expires=([^;]+)', cookie_str, re.I)
+def decode_jwt_payload(jwt_token):
+    """解码 JWT 的 payload 部分，返回 dict"""
+    try:
+        # JWT 由三部分组成，取第二部分（payload）
+        parts = jwt_token.split('.')
+        if len(parts) < 2:
+            return None
+        payload_b64 = parts[1]
+        # 补齐 base64 填充
+        payload_b64 += '=' * (4 - len(payload_b64) % 4)
+        payload_json = base64.urlsafe_b64decode(payload_b64).decode('utf-8')
+        return json.loads(payload_json)
+    except Exception:
+        return None
+
+def get_expiry_from_cookie(cookie_str):
+    """
+    从 Cookie 字符串中提取 pjwt，解码获取 exp 时间戳，返回剩余天数（整数）
+    若无法提取则返回 None
+    """
+    # 提取 pjwt 值
+    match = re.search(r'pjwt=([^;]+)', cookie_str)
     if not match:
         return None
+    jwt_token = match.group(1)
+    payload = decode_jwt_payload(jwt_token)
+    if not payload:
+        return None
+    exp_timestamp = payload.get('exp')
+    if not exp_timestamp:
+        return None
     try:
-        expiry_date = parsedate_to_datetime(match.group(1).strip())
-        delta = expiry_date - datetime.now().astimezone()
+        exp_dt = datetime.fromtimestamp(exp_timestamp)
+        delta = exp_dt - datetime.now()
         return delta.days
     except Exception:
         return None
@@ -75,29 +102,25 @@ def main():
     print(f"检测到 {len(lines)} 个账号，开始签到...")
     results = []
 
-    # 解析每一行，支持 "用户名|Cookie" 或 "用户名:Cookie" 格式
+    # 解析每一行，支持 "用户名|Cookie" 或 纯Cookie
     accounts = []
     for line in lines:
         if '|' in line:
             username, cookie = line.split('|', 1)
-        elif ':' in line:
-            username, cookie = line.split(':', 1)
         else:
-            # 没有分隔符，整行视为 Cookie，用户名留空
             username = None
             cookie = line
         accounts.append((username, cookie.strip()))
 
     for idx, (username, cookie) in enumerate(accounts, 1):
-        # 若未指定用户名，则使用默认 "账号 N"
         display_name = username if username else f"账号 {idx}"
 
-        days_left = parse_cookie_expiry(cookie)
+        # 自动从 Cookie 中提取过期剩余天数
+        days_left = get_expiry_from_cookie(cookie)
         days_str = f"{days_left} 天" if days_left is not None else "未知"
 
         success, msg, chicken = checkin(cookie)
         status_icon = "✅" if success else "❌"
-        # 如果成功但没提取到鸡腿数，尝试从 msg 中补救
         if success and chicken == 0:
             m = re.search(r'(\d+)', msg)
             if m:
