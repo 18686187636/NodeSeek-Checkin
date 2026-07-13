@@ -59,135 +59,61 @@ def send_telegram_message(text):
 
 def checkin(cookie, random_mode=False):
     """
-    签到函数，自动处理已签到、500等异常
-    返回 (success, message, chicken_count)
+    使用正确的签到方式：POST /api/attendance?random=true/false，body 为空
     """
-    # 使用 Session 保持 Cookies 和自动处理重定向
-    s = requests.Session()
-    # 设置默认 headers
-    s.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'keep-alive',
-        'Referer': 'https://www.nodeseek.com/',
+    random_param = 'true' if random_mode else 'false'
+    url = f"https://www.nodeseek.com/api/attendance?random={random_param}"
+    
+    headers = {
+        'Accept': '*/*',
+        'Accept-Language': 'zh-CN,zh-Hans;q=0.9,en;q=0.8',
+        'Content-Type': 'application/json',
+        'Cookie': cookie,
         'Origin': 'https://www.nodeseek.com',
-    })
+        'Referer': 'https://www.nodeseek.com/board',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-origin',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
+    
+    try:
+        # 发送 POST 请求，body 为空
+        resp = requests.post(url, headers=headers, timeout=15)
+    except Exception as e:
+        return False, f"请求异常: {e}", 0
 
-    # 解析并设置 Cookie
-    for item in cookie.split(';'):
-        item = item.strip()
-        if '=' in item:
-            name, value = item.split('=', 1)
-            s.cookies.set(name, value, domain='.nodeseek.com')
-
-    # 尝试访问签到页面，获取 CSRF Token 并检查是否已签到
-    # 可能的签到页面地址（根据常见情况，可能是 /attendance 或 /user/attendance）
-    check_pages = ['/attendance', '/user/attendance', '/member/attendance']
-    already_checked = False
-    for page in check_pages:
-        try:
-            resp = s.get('https://www.nodeseek.com' + page, timeout=10)
-            if resp.status_code == 200:
-                if '已签到' in resp.text or '今日已签' in resp.text:
-                    already_checked = True
-                    # 尝试提取鸡腿数（可能页面会有显示）
-                    m = re.search(r'已签到.*?获得(\d+)鸡腿', resp.text)
-                    chicken = int(m.group(1)) if m else 0
-                    return True, "已签到（今日已打卡）", chicken
-                # 获取 XSRF-TOKEN（如果有）
-                for c in s.cookies:
-                    if c.name == 'XSRF-TOKEN':
-                        break
-                break
-        except:
-            continue
-
-    # 如果已签到检测失败，仍然尝试签到接口
-    # 定义可能的 API 端点
-    endpoints = ['/api/attendance', '/api/user/checkin', '/api/checkin']
-    # 准备 CSRF Token
-    xsrf_token = s.cookies.get('XSRF-TOKEN')
-    if xsrf_token:
-        s.headers.update({'X-XSRF-TOKEN': xsrf_token, 'X-Requested-With': 'XMLHttpRequest'})
-    else:
-        s.headers.update({'X-Requested-With': 'XMLHttpRequest'})
-
-    # 数据
-    data = {}
-    if random_mode:
-        data['random'] = 'true'   # 试试手气
-
-    # 尝试多个端点
-    for endpoint in endpoints:
-        url = 'https://www.nodeseek.com' + endpoint
-        print(f"尝试端点: {endpoint}")
-        try:
-            # 先尝试带数据的请求
-            if data:
-                resp = s.post(url, data=data, timeout=15)
-            else:
-                resp = s.post(url, timeout=15)
-        except Exception as e:
-            print(f"请求失败: {e}")
-            continue
-
-        # 处理 500 错误（可能已签到）
+    if resp.status_code != 200:
+        # 如果返回 500，可能已签到，检查响应文本
         if resp.status_code == 500:
-            # 尝试读取响应文本
-            try:
-                err_text = resp.text
-                if '已签到' in err_text or '重复' in err_text or 'repeat' in err_text.lower():
-                    return True, "已签到（今日已打卡）", 0
-            except:
-                pass
-            # 尝试不带数据重试
-            try:
-                resp2 = s.post(url, timeout=15)
-                if resp2.status_code == 200:
-                    resp = resp2
-                elif resp2.status_code == 500:
-                    # 再次检查
-                    try:
-                        if '已签到' in resp2.text:
-                            return True, "已签到（今日已打卡）", 0
-                    except:
-                        pass
-                    # 如果还是500，可能是其他问题，继续尝试下一个端点
-                    continue
-                else:
-                    # 其他状态码，继续下一个端点
-                    continue
-            except:
-                continue
+            if '已签到' in resp.text or '重复' in resp.text:
+                return True, "已签到（今日已打卡）", 0
+        return False, f"HTTP {resp.status_code}", 0
 
-        # 检查状态码
-        if resp.status_code == 200:
-            try:
-                result = resp.json()
-                success = result.get('success', False)
-                msg = result.get('message', '')
-                chicken = 0
-                if success:
-                    m = re.search(r'获得(\d+)鸡腿', msg)
-                    if m:
-                        chicken = int(m.group(1))
-                return success, msg, chicken
-            except:
-                # 非JSON响应，可能返回了HTML，检查是否已签到
-                if '已签到' in resp.text:
-                    return True, "已签到（页面检测）", 0
-                else:
-                    return False, f"非JSON响应: {resp.text[:100]}", 0
-        else:
-            # 其他状态码，继续尝试
-            print(f"端点 {endpoint} 返回 {resp.status_code}")
+    # 解析 JSON
+    try:
+        result = resp.json()
+    except:
+        return False, f"非JSON响应: {resp.text[:100]}", 0
 
-    # 所有端点都失败，尝试最后的办法：假设已签到（因为之前已签到过）
-    # 如果用户今天确实已经签到，我们可以直接返回成功
-    # 但为了保险，我们返回错误
-    return False, "所有签到端点均失败", 0
+    # 检查成功或已签到
+    success = result.get('success', False)
+    msg = result.get('message', '')
+    state = result.get('state', '')
+
+    # 检查是否已签到（重复）
+    if not success and re.search(r'(已完成签到|已签到|重复|already|duplicate)', msg, re.I):
+        return True, "已签到（今日已打卡）", 0
+
+    # 如果 success 为 True，提取鸡腿数
+    chicken = 0
+    if success or state == 'success':
+        m = re.search(r'获得(\d+)鸡腿', msg)
+        if m:
+            chicken = int(m.group(1))
+        return True, msg, chicken
+
+    return False, msg, 0
 
 def main():
     cookies_raw = os.getenv('NS_COOKIES')
@@ -224,7 +150,6 @@ def main():
         success, msg, chicken = checkin(cookie, random_mode)
         status_icon = "✅" if success else "❌"
         if success and chicken == 0:
-            # 尝试从消息中提取数字
             numbers = re.findall(r'\d+', msg)
             if numbers:
                 chicken = int(numbers[0])
