@@ -8,7 +8,7 @@ import base64
 from datetime import datetime
 
 def decode_jwt_payload(jwt_token):
-    """解码 JWT 的 payload 部分，返回 dict"""
+    """解码 JWT payload"""
     try:
         parts = jwt_token.split('.')
         if len(parts) < 2:
@@ -21,7 +21,7 @@ def decode_jwt_payload(jwt_token):
         return None
 
 def get_expiry_from_cookie(cookie_str):
-    """从 Cookie 中提取 pjwt，解码获取 exp，返回剩余天数"""
+    """从 pjwt 提取过期剩余天数"""
     match = re.search(r'pjwt=([^;]+)', cookie_str)
     if not match:
         return None
@@ -59,36 +59,100 @@ def send_telegram_message(text):
     except Exception as e:
         print(f"发送 Telegram 异常: {e}")
 
+def get_csrf_token(cookie):
+    """访问首页获取 XSRF-TOKEN（若不存在）"""
+    try:
+        url = "https://www.nodeseek.com/"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+            'Connection': 'keep-alive',
+            'Cookie': cookie
+        }
+        resp = requests.get(url, headers=headers, timeout=15)
+        if resp.status_code == 200:
+            # 从返回的 cookies 中提取 XSRF-TOKEN
+            for c in resp.cookies:
+                if c.name == 'XSRF-TOKEN':
+                    return c.value
+        return None
+    except Exception as e:
+        print(f"获取 CSRF Token 失败: {e}")
+        return None
+
 def checkin(cookie, random_mode=False):
-    """
-    执行签到
-    - random_mode: True 表示“试试手气”，False 表示固定签到
-    """
-    url = "https://www.nodeseek.com/api/attendance"
+    """执行签到，自动获取 CSRF Token 并尝试两种提交方式"""
+    # 1. 从现有 Cookie 提取 XSRF-TOKEN
+    xsrf_token = None
+    match = re.search(r'XSRF-TOKEN=([^;]+)', cookie)
+    if match:
+        xsrf_token = match.group(1)
+    else:
+        # 如果没有，则访问首页获取
+        xsrf_token = get_csrf_token(cookie)
+        if xsrf_token:
+            # 将新 token 加入 cookie 字符串（便于后续重用）
+            cookie = cookie + f"; XSRF-TOKEN={xsrf_token}"
+
+    # 2. 构建请求头
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Cookie': cookie,
-        'Content-Type': 'application/json'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+        'Connection': 'keep-alive',
+        'Referer': 'https://www.nodeseek.com/',
+        'Origin': 'https://www.nodeseek.com',
+        'X-Requested-With': 'XMLHttpRequest',
+        'Cookie': cookie
     }
+    if xsrf_token:
+        headers['X-XSRF-TOKEN'] = xsrf_token
+
+    url = "https://www.nodeseek.com/api/attendance"
     data = None
     if random_mode:
-        # 根据 NodeSeek API，试试手气需传递 random=true 参数
-        data = {'random': True}
+        data = {'random': True}   # 试试手气
+
+    # 3. 先尝试 JSON 方式
     try:
-        resp = requests.post(url, headers=headers, json=data, timeout=15)
-        if resp.status_code != 200:
-            return False, f"HTTP {resp.status_code}", 0
-        result = resp.json()
-        success = result.get('success', False)
-        msg = result.get('message', '')
-        chicken = 0
-        if success:
-            m = re.search(r'获得(\d+)鸡腿', msg)
-            if m:
-                chicken = int(m.group(1))
-        return success, msg, chicken
+        if data:
+            resp = requests.post(url, headers=headers, json=data, timeout=15)
+        else:
+            resp = requests.post(url, headers=headers, timeout=15)
     except Exception as e:
-        return False, f"请求异常: {e}", 0
+        return False, f"请求异常(JSON): {e}", 0
+
+    # 4. 如果返回 419 或 403，尝试用 form-data 方式
+    if resp.status_code in (419, 403):
+        print("收到 419/403，尝试使用表单提交...")
+        try:
+            if data:
+                # 将布尔值转为字符串
+                form_data = {k: str(v).lower() if isinstance(v, bool) else v for k, v in data.items()}
+                resp = requests.post(url, headers=headers, data=form_data, timeout=15)
+            else:
+                resp = requests.post(url, headers=headers, timeout=15)
+        except Exception as e:
+            return False, f"请求异常(Form): {e}", 0
+
+    if resp.status_code != 200:
+        return False, f"HTTP {resp.status_code}", 0
+
+    try:
+        result = resp.json()
+    except:
+        return False, f"非JSON响应: {resp.text[:100]}", 0
+
+    success = result.get('success', False)
+    msg = result.get('message', '')
+    chicken = 0
+    if success:
+        m = re.search(r'获得(\d+)鸡腿', msg)
+        if m:
+            chicken = int(m.group(1))
+    return success, msg, chicken
 
 def main():
     cookies_raw = os.getenv('NS_COOKIES')
@@ -96,7 +160,6 @@ def main():
         print("错误: 未设置 NS_COOKIES")
         sys.exit(1)
 
-    # 读取签到模式（环境变量 NS_RANDOM，true 表示试试手气）
     random_mode = os.getenv('NS_RANDOM', 'false').strip().lower() == 'true'
 
     lines = [line.strip() for line in cookies_raw.split('\n') if line.strip()]
