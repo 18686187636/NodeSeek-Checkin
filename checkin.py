@@ -136,7 +136,7 @@ def main():
             if numbers:
                 chicken = int(numbers[0])
 
-        result_line = f"{display_name}: {status_icon} {msg} | 获得 {chicken} 鸡腿 | cookie到期剩余 {days_str}"
+        result_line = f"{display_name}: {status_icon} {msg}\n 获得 {chicken} 鸡腿 \n cookie到期剩余 {days_str} \n https://www.nodeseek.com/"
         results.append(result_line)
         print(result_line)
 
